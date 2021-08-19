@@ -1,0 +1,7 @@
+*.patch
+*.swp
+*.swo
+*~
+vendor/
+tags
+sync-message-server
