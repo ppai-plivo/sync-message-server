@@ -8,4 +8,5 @@ const (
 	cbkSrvAddr          = ":8091"
 	proxySrvAddr        = ":8090"
 	callbackWaitTimeout = 10 * time.Second
+	pollInterval        = 500 * time.Millisecond
 )

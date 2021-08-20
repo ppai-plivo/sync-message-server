@@ -194,7 +194,7 @@ func interceptResponse(resp *http.Response) error {
 			syncResp, err := pollMessageUUID(pollCtx, messageUUID, authID, authToken)
 			if err != nil {
 				if errors.Is(err, errMsgStillInQueue) {
-					time.Sleep(500 * time.Millisecond)
+					time.Sleep(pollInterval)
 					continue
 				}
 				if errors.Is(err, context.Canceled) {
