@@ -185,51 +185,51 @@ func interceptResponse(resp *http.Response) error {
 	}
 
 	pollCh := make(chan FrontendResponse, 1)
-	var cancelPoll bool
+
+	pollCtx, cancelPoll := context.WithCancel(context.Background())
+	defer cancelPoll()
+
 	go func() {
 		for i := 0; i < 10; i++ {
-			if cancelPoll {
-				break
-			}
-			syncResp, err := pollMessageUUID(messageUUID, authID, authToken)
+			syncResp, err := pollMessageUUID(pollCtx, messageUUID, authID, authToken)
 			if err != nil {
-				if !errors.Is(err, errMsgStillInQueue) {
-					log.Printf("pollMessageUUID() failed: %s", err.Error())
+				if errors.Is(err, errMsgStillInQueue) {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				if errors.Is(err, context.Canceled) {
 					return
 				}
-				time.Sleep(500 * time.Millisecond)
-				continue
+				log.Printf("pollMessageUUID() failed: %s", err.Error())
+				return
 			}
 			pollCh <- *syncResp
 			break
 		}
 	}()
 
+	var syncResp *FrontendResponse
 	select {
-	case syncResp := <-cbkCh:
-		cancelPoll = true
-		b, err := json.Marshal(syncResp)
-		if err != nil {
-			log.Printf("json.Marshal() failed: %v", err)
-			return fmt.Errorf("json.Marshal() failed: %w", err)
-		}
-		respBytes = b
-		return nil
-	case syncResp := <-pollCh:
-		b, err := json.Marshal(syncResp)
-		if err != nil {
-			log.Printf("json.Marshal() failed: %v", err)
-			return fmt.Errorf("json.Marshal() failed: %w", err)
-		}
-		respBytes = b
-		return nil
+	case v := <-pollCh:
+		syncResp = &v
+	case v := <-cbkCh:
+		syncResp = &v
+		cancelPoll()
 	case <-time.After(callbackWaitTimeout):
 		return fmt.Errorf("timeout on waiting for callback")
 	}
+
+	b, err := json.Marshal(syncResp)
+	if err != nil {
+		log.Printf("json.Marshal() failed: %v", err)
+		return fmt.Errorf("json.Marshal() failed: %w", err)
+	}
+	respBytes = b
+	return nil
 }
 
-func pollMessageUUID(messageUUID, authID, authToken string) (*FrontendResponse, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/Account/%s/Message/%s/", plivoURL, authID, messageUUID), nil)
+func pollMessageUUID(ctx context.Context, messageUUID, authID, authToken string) (*FrontendResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v1/Account/%s/Message/%s/", plivoURL, authID, messageUUID), nil)
 	if err != nil {
 		return nil, fmt.Errorf("http.NewRequest() failed: %w", err)
 	}
