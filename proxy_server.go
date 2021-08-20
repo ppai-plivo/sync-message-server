@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -16,9 +19,36 @@ import (
 	"github.com/google/uuid"
 )
 
+type myCtxKeyType string
+
 var (
-	sendMsgPath = regexp.MustCompile("^/v1/Account/(MA|SA)[A-Z0-9]+/Message/$")
+	sendMsgPath        = regexp.MustCompile("^/v1/Account/(MA|SA)[A-Z0-9]+/Message/$")
+	reqIDCtxKey        = myCtxKeyType("proxy-req-id")
+	errMsgStillInQueue = errors.New("message still in queue")
+	pollClient         = &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   3 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:   true,
+			MaxIdleConns:        100,
+			IdleConnTimeout:     60 * time.Second,
+			TLSHandshakeTimeout: 3 * time.Second,
+		},
+		Timeout: 6 * time.Second,
+	}
 )
+
+func getReqID(ctx context.Context, key myCtxKeyType) string {
+	if v := ctx.Value(key); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
 
 func spawnProxyServer(addr string) (*http.Server, error) {
 	u, err := url.Parse(plivoURL)
@@ -60,7 +90,7 @@ func wrapDirectors(dirs ...func(*http.Request)) func(*http.Request) {
 }
 
 func interceptRequest(req *http.Request) {
-	if req.Method != http.MethodPost || !sendMsgPath.MatchString(req.URL.Path) {
+	if req.Method != http.MethodPost || !sendMsgPath.MatchString(req.URL.Path) || req.Body == nil {
 		return
 	}
 
@@ -83,7 +113,8 @@ func interceptRequest(req *http.Request) {
 		return
 	}
 
-	sendMsgReq.URL = callbackURL
+	reqID := uuid.NewString()
+	sendMsgReq.URL = callbackURL + "/" + reqID
 	sendMsgReq.Method = http.MethodPost
 
 	b, err := json.Marshal(sendMsgReq)
@@ -92,12 +123,37 @@ func interceptRequest(req *http.Request) {
 		return
 	}
 	reqBytes = b
+
+	entry := Entry{
+		CbkCh:     make(chan FrontendResponse, 3),
+		CreatedAt: time.Now(),
+	}
+	store.Put(reqID, entry)
+	ctx := context.WithValue(req.Context(), reqIDCtxKey, reqID)
+	*req = *req.WithContext(ctx)
 }
 
 func interceptResponse(resp *http.Response) error {
 	if resp.StatusCode != http.StatusAccepted || resp.Request.Method != http.MethodPost || !sendMsgPath.MatchString(resp.Request.URL.Path) {
 		return nil
 	}
+
+	authID, authToken, ok := resp.Request.BasicAuth()
+	if !ok {
+		return nil
+	}
+
+	reqID := getReqID(resp.Request.Context(), reqIDCtxKey)
+	if reqID == "" {
+		return nil
+	}
+
+	entry, ok := store.Get(reqID)
+	if !ok {
+		return nil
+	}
+	defer store.Delete(reqID)
+	cbkCh := entry.CbkCh
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -123,36 +179,25 @@ func interceptResponse(resp *http.Response) error {
 	}
 
 	messageUUID := sendMsgResp.MessageUUID[0]
-
 	if _, err := uuid.Parse(messageUUID); err != nil {
 		log.Printf("uuid.Parse() failed: %v", err)
 		return fmt.Errorf("uuid.Parse() failed: %w", err)
 	}
 
-	authID, authToken, ok := resp.Request.BasicAuth()
-	if !ok {
-		return nil
-	}
-
-	entry := Entry{
-		CbkCh: make(chan FrontendResponse, 3),
-	}
-
-	store.Put(messageUUID, entry)
-	defer store.Delete(messageUUID)
-
 	pollCh := make(chan FrontendResponse, 1)
 	var cancelPoll bool
 	go func() {
-		time.Sleep(500 * time.Millisecond)
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 10; i++ {
 			if cancelPoll {
 				break
 			}
 			syncResp, err := pollMessageUUID(messageUUID, authID, authToken)
 			if err != nil {
-				log.Printf("pollMessageUUID() failed: %s", err.Error())
-				time.Sleep(1 * time.Second)
+				if !errors.Is(err, errMsgStillInQueue) {
+					log.Printf("pollMessageUUID() failed: %s", err.Error())
+					return
+				}
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 			pollCh <- *syncResp
@@ -161,7 +206,7 @@ func interceptResponse(resp *http.Response) error {
 	}()
 
 	select {
-	case syncResp := <-entry.CbkCh:
+	case syncResp := <-cbkCh:
 		cancelPoll = true
 		b, err := json.Marshal(syncResp)
 		if err != nil {
@@ -190,7 +235,7 @@ func pollMessageUUID(messageUUID, authID, authToken string) (*FrontendResponse, 
 	}
 	req.SetBasicAuth(authID, authToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := pollClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http.DefaultClient.Do() failed: %w", err)
 	}
@@ -211,7 +256,7 @@ func pollMessageUUID(messageUUID, authID, authToken string) (*FrontendResponse, 
 	}
 
 	if syncResp.MessageState == "queued" {
-		return nil, fmt.Errorf("message still in queued state")
+		return nil, errMsgStillInQueue
 	}
 
 	return &syncResp, nil

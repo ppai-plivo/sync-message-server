@@ -1,9 +1,13 @@
 package main
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type Entry struct {
-	CbkCh chan FrontendResponse
+	CbkCh     chan FrontendResponse
+	CreatedAt time.Time
 }
 
 type MsgStore struct {
@@ -11,26 +15,26 @@ type MsgStore struct {
 	m map[string]Entry
 }
 
-func (s *MsgStore) Put(messageUUID string, entry Entry) {
+func (s *MsgStore) Put(key string, entry Entry) {
 	s.Lock()
 	defer s.Unlock()
 
-	s.m[messageUUID] = entry
+	s.m[key] = entry
 }
 
-func (s *MsgStore) Get(messageUUID string) (Entry, bool) {
+func (s *MsgStore) Get(key string) (Entry, bool) {
 	s.Lock()
 	defer s.Unlock()
 
-	ch, ok := s.m[messageUUID]
+	ch, ok := s.m[key]
 	return ch, ok
 }
 
-func (s *MsgStore) Delete(messageUUID string) {
+func (s *MsgStore) Delete(key string) {
 	s.Lock()
 	defer s.Unlock()
 
-	delete(s.m, messageUUID)
+	delete(s.m, key)
 }
 
 var store = &MsgStore{

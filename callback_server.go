@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/schema"
@@ -19,6 +20,7 @@ func spawnCbkServer(addr string) (*http.Server, error) {
 		Handler:        mux,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   10 * time.Second,
+		IdleTimeout:    30 * time.Second,
 		MaxHeaderBytes: 1 << 13,
 	}
 
@@ -46,16 +48,15 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	switch resp.MessageState {
 	case "sent", "failed", "delivered", "undelivered":
-		if entry, ok := store.Get(resp.MessageUUID); ok {
+		l := strings.Split(r.URL.Path, "/")
+		reqID := l[len(l)-1]
+		if entry, ok := store.Get(reqID); ok {
 			select {
 			case entry.CbkCh <- resp:
 			default:
 			}
 		}
-		return
 	case "queued":
-		return
 	default:
-		return
 	}
 }
