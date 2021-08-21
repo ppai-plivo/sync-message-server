@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -25,7 +26,7 @@ func spawnCbkServer(addr string) (*http.Server, error) {
 	}
 
 	go func() {
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("srv.ListenAndServe() failed: %v", err)
 		}
 	}()

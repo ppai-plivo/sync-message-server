@@ -53,7 +53,7 @@ func getReqID(ctx context.Context, key myCtxKeyType) string {
 func spawnProxyServer(addr string) (*http.Server, error) {
 	u, err := url.Parse(plivoURL)
 	if err != nil {
-		return nil, fmt.Errorf("url.Parse(%s) failed: %s", plivoURL, err.Error())
+		return nil, fmt.Errorf("url.Parse(%s) failed: %w", plivoURL, err)
 	}
 
 	rproxy := httputil.NewSingleHostReverseProxy(u)
@@ -73,7 +73,7 @@ func spawnProxyServer(addr string) (*http.Server, error) {
 	}
 
 	go func() {
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("srv.ListenAndServe() failed: %v", err)
 		}
 	}()
@@ -107,7 +107,7 @@ func interceptRequest(req *http.Request) {
 		req.Header.Set("Content-Length", strconv.Itoa(len(reqBytes)))
 	}()
 
-	var sendMsgReq BackendRequest
+	var sendMsgReq backendRequest
 	if err := json.Unmarshal(reqBytes, &sendMsgReq); err != nil {
 		log.Printf("json.Unmarshal() failed: %v", err)
 		return
@@ -124,7 +124,7 @@ func interceptRequest(req *http.Request) {
 	}
 	reqBytes = b
 
-	entry := Entry{
+	entry := storeEntry{
 		CbkCh:     make(chan FrontendResponse, 3),
 		CreatedAt: time.Now(),
 	}
@@ -134,7 +134,8 @@ func interceptRequest(req *http.Request) {
 }
 
 func interceptResponse(resp *http.Response) error {
-	if resp.StatusCode != http.StatusAccepted || resp.Request.Method != http.MethodPost || !sendMsgPath.MatchString(resp.Request.URL.Path) {
+	if resp.StatusCode != http.StatusAccepted || resp.Request.Method != http.MethodPost ||
+		!sendMsgPath.MatchString(resp.Request.URL.Path) {
 		return nil
 	}
 
@@ -168,7 +169,7 @@ func interceptResponse(resp *http.Response) error {
 		log.Printf("responding; body=%s", string(respBytes))
 	}()
 
-	var sendMsgResp BackendResponse
+	var sendMsgResp backendResponse
 	if err := json.Unmarshal(respBytes, &sendMsgResp); err != nil {
 		log.Printf("json.Unmarshal() failed: %v", err)
 		return fmt.Errorf("json.Unmarshal() failed: %w", err)
@@ -186,15 +187,18 @@ func interceptResponse(resp *http.Response) error {
 
 	pollCh := make(chan FrontendResponse, 1)
 
-	pollCtx, cancelPoll := context.WithCancel(context.Background())
+	pollCtx, cancelPoll := context.WithCancel(resp.Request.Context())
 	defer cancelPoll()
 
 	go func() {
-		for i := 0; i < 10; i++ {
+		if disablePolling {
+			return
+		}
+		for i := 0; i < pollAttempts; i++ {
 			syncResp, err := pollMessageUUID(pollCtx, messageUUID, authID, authToken)
 			if err != nil {
 				if errors.Is(err, errMsgStillInQueue) {
-					time.Sleep(pollInterval)
+					time.Sleep(pollSeed * 1 << i)
 					continue
 				}
 				if errors.Is(err, context.Canceled) {
@@ -204,7 +208,7 @@ func interceptResponse(resp *http.Response) error {
 				return
 			}
 			pollCh <- *syncResp
-			break
+			return
 		}
 	}()
 
@@ -229,7 +233,8 @@ func interceptResponse(resp *http.Response) error {
 }
 
 func pollMessageUUID(ctx context.Context, messageUUID, authID, authToken string) (*FrontendResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v1/Account/%s/Message/%s/", plivoURL, authID, messageUUID), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/v1/Account/%s/Message/%s/", plivoURL, authID, messageUUID), nil)
 	if err != nil {
 		return nil, fmt.Errorf("http.NewRequest() failed: %w", err)
 	}

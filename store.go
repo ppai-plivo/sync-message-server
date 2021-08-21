@@ -5,24 +5,24 @@ import (
 	"time"
 )
 
-type Entry struct {
+type storeEntry struct {
 	CbkCh     chan FrontendResponse
 	CreatedAt time.Time
 }
 
-type MsgStore struct {
+type memStore struct {
 	*sync.Mutex
-	m map[string]Entry
+	m map[string]storeEntry
 }
 
-func (s *MsgStore) Put(key string, entry Entry) {
+func (s *memStore) Put(key string, storeEntry storeEntry) {
 	s.Lock()
 	defer s.Unlock()
 
-	s.m[key] = entry
+	s.m[key] = storeEntry
 }
 
-func (s *MsgStore) Get(key string) (Entry, bool) {
+func (s *memStore) Get(key string) (storeEntry, bool) {
 	s.Lock()
 	defer s.Unlock()
 
@@ -30,14 +30,14 @@ func (s *MsgStore) Get(key string) (Entry, bool) {
 	return ch, ok
 }
 
-func (s *MsgStore) Delete(key string) {
+func (s *memStore) Delete(key string) {
 	s.Lock()
 	defer s.Unlock()
 
 	delete(s.m, key)
 }
 
-var store = &MsgStore{
+var store = &memStore{
 	&sync.Mutex{},
-	make(map[string]Entry),
+	make(map[string]storeEntry),
 }

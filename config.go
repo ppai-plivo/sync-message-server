@@ -3,10 +3,14 @@ package main
 import "time"
 
 const (
-	plivoURL            = "https://api.plivo.com"
-	callbackURL         = "https://3499ae347de9.ngrok.io"
-	cbkSrvAddr          = ":8091"
-	proxySrvAddr        = ":8090"
+	proxySrvAddr = ":8090"
+	cbkSrvAddr   = ":8091"
+	plivoURL     = "https://api.plivo.com"
+
+	callbackURL         = "https://e9c3-157-45-87-61.ngrok.io"
 	callbackWaitTimeout = 10 * time.Second
-	pollInterval        = 500 * time.Millisecond
+
+	pollAttempts   = 8
+	pollSeed       = 25 * time.Millisecond
+	disablePolling = false
 )
